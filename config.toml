@@ -13,7 +13,9 @@ canais = [
 [pelando]
 # Também vigia o site pelando.com.br: a busca abaixo (a mesma do seu alerta)
 # e a página de promoções recentes, a cada rodada. false = desliga.
-ativo = true
+# Desligado aqui: o site do Pelando responde 403 (bloqueado) para os
+# servidores do GitHub. O canal @pelandobr acima continua coberto.
+ativo = false
 busca = "console playstation 5"
 
 [filtro]
