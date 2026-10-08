@@ -28,8 +28,11 @@ INTERVALO_PELANDO_S = 180
 PELANDO_FALHAS_ATE_ESPACAR = 3
 INTERVALO_PELANDO_BLOQUEADO_S = 1800
 INTERVALO_ACORDAR_S = 600  # bem abaixo dos 15 min que fazem o Render desligar o serviço
+RESUMO_A_CADA_RODADAS = 60  # uma linha de saúde no log por hora
 
 status = {"inicio": datetime.now(), "rodadas": 0, "avisos": 0, "ultima": "-", "pelando": "-", "erro": ""}
+# Contadores do resumo de hora em hora; zeram a cada resumo.
+hora = {"posts": 0, "avisos": 0, "erros": 0, "visitas_ok": 0, "visitas_falha": 0}
 
 
 class Pagina(BaseHTTPRequestHandler):
@@ -70,7 +73,9 @@ async def manter_acordado() -> None:
         await asyncio.sleep(INTERVALO_ACORDAR_S)
         try:
             await asyncio.to_thread(_visitar, url)
+            hora["visitas_ok"] += 1
         except Exception as erro:
+            hora["visitas_falha"] += 1
             m.log(f"Não consegui visitar {url}: {erro}")
 
 
@@ -87,6 +92,8 @@ async def main() -> None:
             resumo = await nuvem.rodada(pelando=com_pelando, registrar=False)
             status["erro"] = ""
             status["avisos"] += resumo["avisos"]
+            hora["posts"] += resumo["posts"]
+            hora["avisos"] += resumo["avisos"]
             if com_pelando:
                 status["pelando"] = resumo["pelando"]
                 falhas_pelando = falhas_pelando + 1 if resumo["pelando_falhou"] else 0
@@ -100,12 +107,19 @@ async def main() -> None:
                 m.log(f"{resumo['avisos']} aviso(s) enviado(s); {resumo['posts']} posts novos nesta rodada.")
         except SystemExit as erro:  # faltam BOT_TOKEN/CHAT_ID: fica no ar mostrando o problema
             status["erro"] = str(erro)
+            hora["erros"] += 1
             m.log(str(erro))
         except Exception as erro:
             status["erro"] = f"{datetime.now():%H:%M} {erro}"
+            hora["erros"] += 1
             m.log(f"Erro na rodada: {erro}")
         status["rodadas"] += 1
         status["ultima"] = f"{datetime.now():%H:%M:%S}"
+        if status["rodadas"] % RESUMO_A_CADA_RODADAS == 0:
+            m.log(f"Resumo da última hora: {RESUMO_A_CADA_RODADAS} rodadas, {hora['posts']} posts lidos, "
+                  f"{hora['avisos']} avisos, {hora['erros']} erros, visitas para manter acordado: "
+                  f"{hora['visitas_ok']} ok / {hora['visitas_falha']} falhas. Pelando: {status['pelando']}.")
+            hora.update(dict.fromkeys(hora, 0))
         await asyncio.sleep(max(5.0, INTERVALO_CANAIS_S - (time.monotonic() - inicio)))
 
 
