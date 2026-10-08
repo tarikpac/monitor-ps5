@@ -1,0 +1,18 @@
+# Configuração do Render: cria o serviço grátis do monitor a partir deste repositório.
+services:
+  - type: web
+    name: monitor-ps5
+    runtime: python
+    plan: free
+    region: ohio
+    buildCommand: pip install -r requirements.txt
+    startCommand: python servidor_web.py
+    healthCheckPath: /
+    autoDeploy: true
+    envVars:
+      - key: BOT_TOKEN   # token do bot do @BotFather (o Render pede na criação)
+        sync: false
+      - key: CHAT_ID     # seu id numérico no Telegram (o Render pede na criação)
+        sync: false
+      - key: TZ
+        value: America/Sao_Paulo

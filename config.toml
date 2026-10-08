@@ -13,9 +13,10 @@ canais = [
 [pelando]
 # Também vigia o site pelando.com.br: a busca abaixo (a mesma do seu alerta)
 # e a página de promoções recentes, a cada rodada. false = desliga.
-# Desligado aqui: o site do Pelando responde 403 (bloqueado) para os
-# servidores do GitHub. O canal @pelandobr acima continua coberto.
-ativo = false
+# O site do Pelando recusa (403) os servidores do GitHub; no Render o
+# servidor_web.py tenta e, se for recusado também, passa a tentar só de meia
+# em meia hora. O canal @pelandobr acima é lido de qualquer jeito.
+ativo = true
 busca = "console playstation 5"
 
 [filtro]

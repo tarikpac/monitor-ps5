@@ -92,11 +92,13 @@ def posts_novos(canal: str, estado: dict) -> tuple[str, list[Post]]:
     return titulo, [novos[i] for i in sorted(novos)]
 
 
-async def rodada(simular: bool) -> None:
+async def rodada(simular: bool = False, pelando: bool = True, registrar: bool = True) -> dict:
+    """Uma passada por canais (e Pelando, se `pelando`). Devolve um resumo;
+    com `registrar`, também o escreve no log."""
     token = os.environ.get("BOT_TOKEN", "").strip()
     chat_id = os.environ.get("CHAT_ID", "").strip()
     if not simular and (not token or not chat_id):
-        sys.exit("Faltam os segredos BOT_TOKEN e CHAT_ID (Settings > Secrets and variables > Actions).")
+        sys.exit("Faltam BOT_TOKEN e CHAT_ID nas variáveis de ambiente (segredos do GitHub ou Environment do Render).")
 
     cfg = m.carregar_config(exigir_telegram=False, exigir_bot=False)
     with open(m.ARQUIVO_CONFIG, "rb") as arquivo:
@@ -123,8 +125,12 @@ async def rodada(simular: bool) -> None:
             link = f"https://t.me/{canal}/{post.id}"
             avisos.append((m.montar_aviso(analise, post.texto, nome, link, post.links, estado), f"{nome}: {link}"))
 
-    pelando = "desligado"
-    if cfg.pelando_ativo:
+    situacao_pelando, pelando_falhou = "desligado", False
+    if not cfg.pelando_ativo:
+        pass
+    elif not pelando:
+        situacao_pelando = "fora desta rodada"
+    else:
         try:
             promos = await m.buscar_pelando(cfg.pelando_busca)
             primeira = not estado.get("pelando_iniciado")
@@ -146,9 +152,9 @@ async def rodada(simular: bool) -> None:
                 avisos.append((aviso, f"Pelando: {promo.link}"))
             estado["pelando"] = estado["pelando"][-PELANDO_VISTAS_MAX:]
             estado["pelando_iniciado"] = True
-            pelando = f"{len(promos)} promoções lidas"
+            situacao_pelando = f"{len(promos)} promoções lidas"
         except Exception as erro:
-            pelando = f"erro ({erro})"
+            situacao_pelando, pelando_falhou = f"erro ({erro})", True
 
     for texto, resumo in avisos:
         if simular:
@@ -158,13 +164,18 @@ async def rodada(simular: bool) -> None:
         m.log(f"Aviso {'enviado' if resposta.get('ok') else 'FALHOU: ' + str(resposta.get('description'))} — {resumo}")
 
     m.salvar_estado(estado)
-    m.log(f"Rodada: {len(canais)} canais, {total_posts} posts novos, Pelando: {pelando}, {len(avisos)} avisos.")
+    resumo = {"canais": len(canais), "posts": total_posts, "avisos": len(avisos),
+              "pelando": situacao_pelando, "pelando_falhou": pelando_falhou}
+    if registrar:
+        m.log(f"Rodada: {len(canais)} canais, {total_posts} posts novos, "
+              f"Pelando: {situacao_pelando}, {len(avisos)} avisos.")
+    return resumo
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Uma rodada do monitor de ofertas PS5 (GitHub Actions).")
     parser.add_argument("--simular", action="store_true", help="mostra os avisos em vez de enviar pelo bot")
-    asyncio.run(rodada(parser.parse_args().simular))
+    asyncio.run(rodada(simular=parser.parse_args().simular))
 
 
 if __name__ == "__main__":
