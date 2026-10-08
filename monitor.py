@@ -85,6 +85,11 @@ _DESCONTO_DEPOIS = re.compile(r"^\s*(off|de desconto|de cashback|em cashback|de 
 
 
 def extrair_precos(texto_normalizado: str) -> list[float]:
+    return [valor for _, valor in precos_com_posicao(texto_normalizado)]
+
+
+def precos_com_posicao(texto_normalizado: str) -> list[tuple[int, float]]:
+    """(posição no texto, valor) de cada preço que é do produto."""
     precos = []
     t = texto_normalizado
     for m in _PRECO.finditer(t):
@@ -96,7 +101,7 @@ def extrair_precos(texto_normalizado: str) -> list[float]:
         valor = int(inteiro.replace(".", ""))
         if centavos:
             valor += int(centavos.ljust(2, "0")) / 100
-        precos.append(float(valor))
+        precos.append((m.start(), float(valor)))
     return precos
 
 
@@ -151,13 +156,49 @@ def analisar(texto: str, f: Filtro) -> Analise:
     return Analise(True, preco, "oferta de console PS5")
 
 
+@dataclass
+class FiltroProduto:
+    """Filtro simples para outros produtos (ex.: um tênis): precisa citar um
+    dos termos, nenhum bloqueado, e o preço é o que vem logo depois do nome."""
+    termos: re.Pattern
+    bloqueados: re.Pattern | None
+    preco_minimo: float
+    preco_maximo: float
+
+
+def analisar_produto(texto: str, f: FiltroProduto) -> Analise:
+    t = normalizar(texto)
+    citacao = f.termos.search(t)
+    if not citacao:
+        return Analise(False, None, "não cita o produto")
+    if f.bloqueados and (m := f.bloqueados.search(t)):
+        return Analise(False, None, f"termo bloqueado: {m.group(0)!r}")
+    # Posts de "resumo" listam vários produtos: vale o par "de R$ X por R$ Y"
+    # logo depois do nome; só sem preço depois é que olha o que vem antes.
+    validos = [(pos, v) for pos, v in precos_com_posicao(t) if v >= f.preco_minimo]
+    depois = [v for pos, v in validos if pos > citacao.start()][:2]
+    antes = [v for pos, v in validos if pos < citacao.start()][-2:]
+    candidatos = depois or antes
+    if not candidatos:  # rankings e "top 10" citam o produto sem oferta
+        return Analise(False, None, "cita o produto, mas sem preço")
+    preco = min(candidatos)
+    if f.preco_maximo and preco > f.preco_maximo:
+        return Analise(False, preco, f"R$ {reais(preco)} passa do seu teto de R$ {reais(f.preco_maximo)}")
+    # Na oferta, o motivo é o termo encontrado (ex.: "novablast 6"): vira o
+    # título do aviso e separa modelos diferentes com o mesmo preço.
+    return Analise(True, preco, re.sub(r"\s+", " ", citacao.group(0)))
+
+
 def chave_de_repeticao(texto: str, preco: float | None) -> str:
     """A mesma promoção circula por vários grupos, cada um com seus emojis e
-    links de afiliado. Com preço: mesmo valor e mesmo modelo (Pro? digital?)
-    contam como repetida. Sem preço: compara o texto sem os links."""
+    links de afiliado. Com preço: mesmo valor e mesmo modelo (Pro? digital?
+    masculino/feminino?) contam como repetida. Sem preço: compara o texto sem
+    os links."""
     t = normalizar(re.sub(r"https?://\S+", " ", texto))
     if preco:
-        modelo = [nome for nome, padrao in (("pro", r"\bpro\b"), ("digital", r"digital")) if re.search(padrao, t)]
+        variantes = (("pro", r"\bpro\b"), ("digital", r"digital"), ("platinum", r"platinum"),
+                     ("masc", r"\bmasc"), ("fem", r"\bfem"), ("unissex", r"unissex"))
+        modelo = [nome for nome, padrao in variantes if re.search(padrao, t)]
         return f"{preco:.0f}|{'+'.join(modelo) or 'padrao'}"
     return re.sub(r"[^a-z0-9$,.]+", " ", t).strip()[:200]
 
@@ -577,12 +618,13 @@ class Monitor:
         registrar_historico(preco, grupo, link, texto)
 
 
-def ja_avisada(recentes: dict[str, float], texto: str, preco: float | None) -> bool:
-    """Marca a oferta como avisada e diz se ela já tinha sido, nas últimas 12 h."""
+def ja_avisada(recentes: dict[str, float], texto: str, preco: float | None, modelo: str = "") -> bool:
+    """Marca a oferta como avisada e diz se ela já tinha sido, nas últimas 12 h.
+    `modelo` separa produtos diferentes com o mesmo preço (ex.: Novablast 5 e 6)."""
     agora = time.time()
     for chave in [k for k, t in recentes.items() if agora - t >= JANELA_REPETIDA_S]:
         del recentes[chave]
-    chave = chave_de_repeticao(texto, preco)
+    chave = f"{modelo}|{chave_de_repeticao(texto, preco)}" if modelo else chave_de_repeticao(texto, preco)
     if chave in recentes:
         return True
     recentes[chave] = agora
@@ -590,16 +632,18 @@ def ja_avisada(recentes: dict[str, float], texto: str, preco: float | None) -> b
 
 
 def montar_aviso(analise: Analise, texto: str, origem: str, link: str | None, lojas: list[str],
-                 estado: dict, rotulo_link: str = "Abrir a mensagem no grupo") -> str:
-    """O texto do aviso no bot. Atualiza o menor preço já visto em `estado`."""
+                 estado: dict, rotulo_link: str = "Abrir a mensagem no grupo",
+                 produto: str = "PS5", emoji: str = "🎮", chave: str = "menor_preco") -> str:
+    """O texto do aviso no bot. Atualiza em `estado` o menor preço já visto
+    deste produto (sob `chave`, `chave`_em e `chave`_grupo)."""
     preco = analise.preco
-    linhas = [f"🎮 <b>PS5 · {'R$ ' + reais(preco) if preco else 'preço não identificado'}</b>"]
-    menor = estado.get("menor_preco")
+    linhas = [f"{emoji} <b>{html.escape(produto)} · {'R$ ' + reais(preco) if preco else 'preço não identificado'}</b>"]
+    menor = estado.get(chave)
     if preco and (menor is None or preco < menor):
         linhas.append("🏆 Menor preço desde que o monitor começou")
-        estado.update(menor_preco=preco, menor_preco_em=f"{datetime.now():%d/%m %H:%M}", menor_preco_grupo=origem)
+        estado.update({chave: preco, f"{chave}_em": f"{datetime.now():%d/%m %H:%M}", f"{chave}_grupo": origem})
     elif menor is not None:
-        linhas.append(f"Menor já visto: R$ {reais(menor)} ({estado.get('menor_preco_em', '')})")
+        linhas.append(f"Menor já visto: R$ {reais(menor)} ({estado.get(f'{chave}_em', '')})")
     linhas.append(f"📍 {html.escape(origem)}")
     resumo = texto.strip()
     if len(resumo) > 700:

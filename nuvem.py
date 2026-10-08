@@ -43,6 +43,36 @@ class Post:
     links: list[str]
 
 
+@dataclass
+class OutroProduto:
+    nome: str
+    emoji: str
+    canais: list[str]
+    filtro: m.FiltroProduto
+
+
+def carregar_outros(dados: dict) -> list[OutroProduto]:
+    """Os blocos [[outros]] do config.toml."""
+    outros = []
+    for bloco in dados.get("outros", []):
+        termos = m.compilar_termos(bloco.get("termos", []))
+        if not termos or not bloco.get("canais"):
+            m.log(f"Produto “{bloco.get('nome', '?')}” sem termos ou sem canais no config.toml; ignorado.")
+            continue
+        outros.append(OutroProduto(
+            nome=bloco.get("nome", "produto"),
+            emoji=bloco.get("emoji", "🔔"),
+            canais=bloco["canais"],
+            filtro=m.FiltroProduto(
+                termos=termos,
+                bloqueados=m.compilar_termos(bloco.get("termos_bloqueados", [])),
+                preco_minimo=float(bloco.get("preco_minimo", 0)),
+                preco_maximo=float(bloco.get("preco_maximo", 0)),
+            ),
+        ))
+    return outros
+
+
 def ler_posts(pagina: str) -> list[Post]:
     """Os posts da página pública do canal, do mais antigo para o mais novo."""
     marcas = list(_POST.finditer(pagina))
@@ -102,7 +132,9 @@ async def rodada(simular: bool = False, pelando: bool = True, registrar: bool = 
 
     cfg = m.carregar_config(exigir_telegram=False, exigir_bot=False)
     with open(m.ARQUIVO_CONFIG, "rb") as arquivo:
-        canais = tomllib.load(arquivo).get("nuvem", {}).get("canais", [])
+        dados = tomllib.load(arquivo)
+    canais = dados.get("nuvem", {}).get("canais", [])
+    outros = carregar_outros(dados)
 
     estado = m.carregar_estado()
     estado.setdefault("canais", {})
@@ -124,6 +156,31 @@ async def rodada(simular: bool = False, pelando: bool = True, registrar: bool = 
                 continue
             link = f"https://t.me/{canal}/{post.id}"
             avisos.append((m.montar_aviso(analise, post.texto, nome, link, post.links, estado), f"{nome}: {link}"))
+
+    # Outros produtos: cada um com seus canais, seu filtro e seu estado (o que
+    # já viu, repetições e menor preço), separados do PS5.
+    for alvo in outros:
+        estado_alvo = estado.setdefault("outros", {}).setdefault(alvo.nome, {})
+        estado_alvo.setdefault("canais", {})
+        estado_alvo.setdefault("recentes", {})
+        for canal in alvo.canais:
+            try:
+                nome, posts = await asyncio.to_thread(posts_novos, canal, estado_alvo)
+            except Exception as erro:
+                m.log(f"Não consegui ler @{canal} ({alvo.nome}): {erro}")
+                continue
+            total_posts += len(posts)
+            for post in posts:
+                analise = m.analisar_produto(post.texto, alvo.filtro) if post.texto else None
+                if not analise or not analise.oferta:
+                    continue
+                modelo = analise.motivo
+                if m.ja_avisada(estado_alvo["recentes"], post.texto, analise.preco, modelo):
+                    continue
+                link = f"https://t.me/{canal}/{post.id}"
+                aviso = m.montar_aviso(analise, post.texto, nome, link, post.links, estado_alvo,
+                                       produto=modelo.title(), emoji=alvo.emoji, chave=f"menor_{modelo}")
+                avisos.append((aviso, f"{modelo.title()} em {nome}: {link}"))
 
     situacao_pelando, pelando_falhou = "desligado", False
     if not cfg.pelando_ativo:

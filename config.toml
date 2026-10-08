@@ -10,6 +10,20 @@ canais = [
   "pelandobr", "descontomaior",
 ]
 
+# Outros produtos, cada um com seus canais e seu filtro, separados do PS5.
+# Os avisos chegam pelo mesmo bot, com o emoji e o modelo no título.
+[[outros]]
+nome = "Novablast"
+emoji = "👟"
+canais = ["teniscertocupons"]
+# Precisa citar um destes (masculino e feminino entram os dois).
+termos = ["novablast 5", "novablast 6"]
+# Posts de resumo e ranking repetem ofertas que já foram avisadas.
+termos_bloqueados = ["resumo das melhores", "top 10", "mais vendidos da semana"]
+# Abaixo disso não é o tênis (meia, palmilha...). 0 = sem teto de preço.
+preco_minimo = 150
+preco_maximo = 0
+
 [pelando]
 # Também vigia o site pelando.com.br: a busca abaixo (a mesma do seu alerta)
 # e a página de promoções recentes, a cada rodada. false = desliga.
