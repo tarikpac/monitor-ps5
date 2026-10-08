@@ -9,6 +9,8 @@ canais = [
   "c_cuponsepromocoesonline", "meups4", "ofertasportateis",
   "pelandobr", "descontomaior",
 ]
+# Resposta do bot do PS5 quando você aperta "Iniciar" (/start).
+boas_vindas = "👋 Olá! A partir de agora eu te aviso aqui sempre que aparecer oferta de console PS5 nos canais de promoções. Deixe as notificações deste chat ligadas para não perder nenhuma."
 
 # Outros produtos, cada um com seus canais e seu filtro, separados do PS5.
 # Os avisos chegam pelo mesmo bot, com o emoji e o modelo no título.
@@ -19,6 +21,8 @@ canais = ["teniscertocupons"]
 # Bot próprio deste produto: nome da variável de ambiente com o token dele
 # (no Render, em Environment). Sem ela, usa o bot do PS5.
 bot = "BOT_TOKEN_TENIS"
+# Resposta deste bot quando você aperta "Iniciar" (/start).
+boas_vindas = "👋 Olá! A partir de agora eu te aviso aqui sempre que aparecer oferta de ASICS Novablast 5 ou 6 (masculino e feminino) no canal Tênis Certo. Deixe as notificações deste chat ligadas para não perder nenhuma."
 # Precisa citar um destes (masculino e feminino entram os dois).
 termos = ["novablast 5", "novablast 6"]
 # Posts de resumo e ranking repetem ofertas que já foram avisadas.

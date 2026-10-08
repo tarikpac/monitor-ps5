@@ -6,14 +6,21 @@ endereço web, que é o que o Render exige de um serviço grátis. O Render
 desliga o serviço depois de 15 minutos sem visitas, então o próprio monitor
 visita o seu endereço a cada 10 minutos.
 
-Variáveis de ambiente: BOT_TOKEN, CHAT_ID; o Render fornece PORT e
-RENDER_EXTERNAL_URL.
+Os bots recebem mensagens por webhook em /telegram/<bot>: quem aperta
+"Iniciar" (/start) recebe a mensagem de boas-vindas do config.toml.
+
+Variáveis de ambiente: BOT_TOKEN, CHAT_ID (e os bots extras do config.toml);
+o Render fornece PORT e RENDER_EXTERNAL_URL.
 """
 
 import asyncio
+import hashlib
+import json
 import os
+import re
 import threading
 import time
+import tomllib
 import urllib.request
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -30,12 +37,84 @@ INTERVALO_PELANDO_BLOQUEADO_S = 1800
 INTERVALO_ACORDAR_S = 600  # bem abaixo dos 15 min que fazem o Render desligar o serviço
 RESUMO_A_CADA_RODADAS = 60  # uma linha de saúde no log por hora
 
+BOAS_VINDAS_PADRAO = "👋 Olá! A partir de agora eu te aviso aqui quando aparecer uma oferta."
+# Para quem não é o dono (CHAT_ID): os avisos só vão para o dono.
+BOAS_VINDAS_OUTROS = "👋 Olá! Este bot é de uso pessoal e só envia avisos para o dono dele."
+
 status = {"inicio": datetime.now(), "rodadas": 0, "avisos": 0, "ultima": "-", "pelando": "-", "erro": ""}
 # Contadores do resumo de hora em hora; zeram a cada resumo.
 hora = {"posts": 0, "avisos": 0, "erros": 0, "visitas_ok": 0, "visitas_falha": 0}
+# caminho do webhook ("ps5", "novablast"...) -> {"token", "boas_vindas"}
+bots: dict[str, dict] = {}
+
+
+def segredo_webhook(token: str) -> str:
+    """O Telegram devolve este valor no cabeçalho de cada entrega; só quem tem
+    o token do bot consegue calculá-lo, então ninguém mais finge ser o Telegram."""
+    return hashlib.sha256(token.encode()).hexdigest()[:32]
+
+
+def carregar_bots() -> dict[str, dict]:
+    with open(m.ARQUIVO_CONFIG, "rb") as arquivo:
+        dados = tomllib.load(arquivo)
+    encontrados = {}
+    principal = os.environ.get("BOT_TOKEN", "").strip()
+    if principal:
+        encontrados["ps5"] = {"token": principal,
+                              "boas_vindas": dados.get("nuvem", {}).get("boas_vindas", BOAS_VINDAS_PADRAO)}
+    for bloco in dados.get("outros", []):
+        token = os.environ.get(str(bloco.get("bot", "")).strip() or "-", "").strip()
+        if token:
+            caminho = re.sub(r"[^a-z0-9]+", "-", m.normalizar(bloco.get("nome", "produto"))).strip("-")
+            encontrados[caminho] = {"token": token, "boas_vindas": bloco.get("boas_vindas", BOAS_VINDAS_PADRAO)}
+    return encontrados
+
+
+async def registrar_webhooks() -> None:
+    base = os.environ.get("RENDER_EXTERNAL_URL")
+    if not base:  # rodando fora do Render: sem endereço público para o Telegram entregar
+        return
+    for caminho, bot in bots.items():
+        resposta = await m.chamar_bot(bot["token"], "setWebhook", {
+            "url": f"{base}/telegram/{caminho}",
+            "secret_token": segredo_webhook(bot["token"]),
+            "allowed_updates": ["message"],
+            "drop_pending_updates": True,
+        })
+        if not resposta.get("ok"):
+            m.log(f"Não consegui ligar as mensagens do bot {caminho}: {resposta.get('description')}")
+
+
+def resposta_ao_bot(bot: dict, atualizacao: dict) -> dict:
+    """A resposta vai no próprio retorno do webhook (o Telegram aceita um
+    método no corpo), sem precisar de outra chamada à API."""
+    mensagem = atualizacao.get("message") or {}
+    chat_id = (mensagem.get("chat") or {}).get("id")
+    if not chat_id or not (mensagem.get("text") or "").startswith("/start"):
+        return {}
+    dono = str(chat_id) == os.environ.get("CHAT_ID", "").strip()
+    return {"method": "sendMessage", "chat_id": chat_id,
+            "text": bot["boas_vindas"] if dono else BOAS_VINDAS_OUTROS}
 
 
 class Pagina(BaseHTTPRequestHandler):
+    def do_POST(self) -> None:
+        bot = bots.get(self.path.rstrip("/").removeprefix("/telegram/")) if self.path.startswith("/telegram/") else None
+        if not bot or self.headers.get("X-Telegram-Bot-Api-Secret-Token") != segredo_webhook(bot["token"]):
+            self.send_response(403)
+            self.end_headers()
+            return
+        try:
+            atualizacao = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
+        except ValueError:
+            atualizacao = {}
+        corpo = json.dumps(resposta_ao_bot(bot, atualizacao)).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(corpo)))
+        self.end_headers()
+        self.wfile.write(corpo)
+
     def do_GET(self) -> None:
         linhas = [
             f"Monitor de ofertas PS5 no ar desde {status['inicio']:%d/%m %H:%M}",
@@ -80,8 +159,10 @@ async def manter_acordado() -> None:
 
 
 async def main() -> None:
+    bots.update(carregar_bots())
     servir_pagina()
     asyncio.create_task(manter_acordado())
+    await registrar_webhooks()
     m.log("Monitor ligado: canais a cada 1 min, Pelando a cada 3 min.")
 
     proximo_pelando, falhas_pelando = 0.0, 0
