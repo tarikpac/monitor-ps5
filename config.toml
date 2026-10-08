@@ -14,7 +14,7 @@ descricao = "Avisa na hora quando aparece oferta de console PS5 nos principais c
 boas_vindas = "👋 Olá! A partir de agora eu te aviso aqui sempre que aparecer oferta de console PS5 nos canais de promoções. Deixe as notificações deste chat ligadas para não perder nenhuma."
 
 # Outros produtos, cada um com seus canais e seu filtro, separados do PS5.
-# Os avisos chegam pelo mesmo bot, com o emoji e o modelo no título.
+# Cada um avisa pelo bot indicado em `bot`, com o emoji e o modelo no título.
 [[outros]]
 nome = "Novablast"
 emoji = "👟"
@@ -22,9 +22,10 @@ canais = ["teniscertocupons"]
 # Bot próprio deste produto: nome da variável de ambiente com o token dele
 # (no Render, em Environment). Sem ela, usa o bot do PS5.
 bot = "BOT_TOKEN_TENIS"
-# O que aparece antes de apertar "Iniciar" e a resposta ao /start.
-descricao = "Avisa na hora quando aparece oferta de ASICS Novablast 5 ou 6 (masculino e feminino) no canal Tênis Certo. Aperte Iniciar para receber."
-boas_vindas = "👋 Olá! A partir de agora eu te aviso aqui sempre que aparecer oferta de ASICS Novablast 5 ou 6 (masculino e feminino) no canal Tênis Certo. Deixe as notificações deste chat ligadas para não perder nenhuma."
+# O que aparece antes de apertar "Iniciar" e a resposta ao /start. Este bot
+# também avisa o notebook gamer (bloco abaixo), então os textos falam dos dois.
+descricao = "Avisa na hora quando aparece oferta de ASICS Novablast 5 ou 6 (masculino e feminino) e de notebook gamer (16GB de RAM, RTX 3050 ou melhor, até R$ 5.500). Aperte Iniciar para receber."
+boas_vindas = "👋 Olá! A partir de agora eu te aviso aqui sempre que aparecer oferta de ASICS Novablast 5 ou 6 (masculino e feminino) e de notebook gamer com 16GB de RAM e RTX 3050 ou melhor por até R$ 5.500. Deixe as notificações deste chat ligadas para não perder nenhuma."
 # Precisa citar um destes (masculino e feminino entram os dois).
 termos = ["novablast 5", "novablast 6"]
 # Posts de resumo e ranking repetem ofertas que já foram avisadas.
@@ -32,6 +33,29 @@ termos_bloqueados = ["resumo das melhores", "top 10", "mais vendidos da semana"]
 # Abaixo disso não é o tênis (meia, palmilha...). 0 = sem teto de preço.
 preco_minimo = 150
 preco_maximo = 0
+
+[[outros]]
+nome = "Notebook gamer"
+emoji = "💻"
+# Canais de tecnologia e de promoções em geral.
+canais = ["ofertasadrenaline", "ofertasportateis", "c_cuponsepromocoesonline", "pelandobr", "descontomaior"]
+# Mesmo bot do Novablast: os inscritos dele recebem os dois.
+bot = "BOT_TOKEN_TENIS"
+termos = ["notebook", "laptop"]
+# Precisa citar uma destas placas de vídeo (RTX 3050 ou melhor).
+placas = [
+  "rtx 3050", "rtx 3050 ti", "rtx 3060", "rtx 3070", "rtx 3070 ti", "rtx 3080", "rtx 3080 ti",
+  "rtx 4050", "rtx 4060", "rtx 4070", "rtx 4080", "rtx 4090",
+  "rtx 5050", "rtx 5060", "rtx 5070", "rtx 5070 ti", "rtx 5080", "rtx 5090",
+  "rx 6600m", "rx 6650m", "rx 6700m", "rx 6800m", "rx 7600s", "rx 7600m", "rx 7700s",
+]
+# Memória mínima, em GB. Anúncio sem a RAM escrita também avisa, marcado
+# como "RAM não informada" no título.
+ram_minima_gb = 16
+# Mochilas e acessórios citam "notebook" mas não são o notebook.
+termos_bloqueados = ["mochila", "capa para", "suporte para"]
+preco_minimo = 1500
+preco_maximo = 5500
 
 [pelando]
 # Também vigia o site pelando.com.br: a busca abaixo (a mesma do seu alerta)

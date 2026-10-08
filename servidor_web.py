@@ -72,10 +72,14 @@ def carregar_bots() -> dict[str, dict]:
             "boas_vindas": nuvem_cfg.get("boas_vindas", BOAS_VINDAS_PADRAO),
             "descricao": nuvem_cfg.get("descricao", ""),
         }
+    # Um bot por variável de token; com vários produtos no mesmo bot, textos e
+    # chave vêm do primeiro produto dele no config.toml.
+    chaves = nuvem.chaves_dos_bots(dados)
     for bloco in dados.get("outros", []):
-        token = os.environ.get(str(bloco.get("bot", "")).strip() or "-", "").strip()
-        if token:
-            encontrados[nuvem.chave_do_bot(bloco.get("nome", "produto"))] = {
+        env = str(bloco.get("bot", "")).strip()
+        token = os.environ.get(env, "").strip() if env else ""
+        if token and chaves[env] not in encontrados:
+            encontrados[chaves[env]] = {
                 "token": token,
                 "boas_vindas": bloco.get("boas_vindas", BOAS_VINDAS_PADRAO),
                 "descricao": bloco.get("descricao", ""),

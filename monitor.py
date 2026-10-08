@@ -124,6 +124,7 @@ class Analise:
     oferta: bool
     preco: float | None
     motivo: str
+    titulo: str = ""  # outros produtos: o que vai no título do aviso (ex.: "Notebook · RTX 4050 · 16GB RAM")
 
 
 def analisar(texto: str, f: Filtro) -> Analise:
@@ -159,11 +160,37 @@ def analisar(texto: str, f: Filtro) -> Analise:
 @dataclass
 class FiltroProduto:
     """Filtro simples para outros produtos (ex.: um tênis): precisa citar um
-    dos termos, nenhum bloqueado, e o preço é o que vem logo depois do nome."""
+    dos termos, nenhum bloqueado, e o preço é o que vem logo depois do nome.
+    Opcionais: `exige` (precisa citar também um destes, ex.: placas de vídeo)
+    e `ram_minima` em GB (ex.: notebooks)."""
     termos: re.Pattern
     bloqueados: re.Pattern | None
     preco_minimo: float
     preco_maximo: float
+    exige: re.Pattern | None = None
+    ram_minima: int = 0
+
+
+_RAM_EXPLICITA = re.compile(
+    r"(?<![\d.])(\d{1,2})\s*gb\s*(?:de\s*)?(?:memoria\s*)?(?:ram|ddr\d|lpddr\d)"
+    r"|(?:ram|memoria)\s*(?:de\s*)?(\d{1,2})\s*gb"
+)
+_GB = re.compile(r"(?<![\d.])(\d{1,2})\s*gb(?!\s*(?:de\s*)?(?:ssd|hd|nvme|emmc|gddr|vram|video))")
+
+
+def ram_gb(texto_normalizado: str) -> int | None:
+    """Memória RAM citada no anúncio. Sem "RAM"/"DDR" escrito, vale o primeiro
+    "NN GB" que não é SSD nem a memória da placa ("RTX 3050 6GB")."""
+    t = texto_normalizado
+    explicitos = [int(a or b) for a, b in _RAM_EXPLICITA.findall(t)]
+    if explicitos:
+        return max(explicitos)
+    for m in _GB.finditer(t):
+        if re.search(r"(?:rtx|gtx|rx|arc)\s*\w*\s*(?:ti\s*)?(?:de\s*|com\s*|[(\-,]\s*)?$", t[max(0, m.start() - 20):m.start()]):
+            continue
+        if int(m.group(1)) in (4, 8, 12, 16, 18, 24, 32, 48, 64):
+            return int(m.group(1))
+    return None
 
 
 def analisar_produto(texto: str, f: FiltroProduto) -> Analise:
@@ -173,6 +200,12 @@ def analisar_produto(texto: str, f: FiltroProduto) -> Analise:
         return Analise(False, None, "não cita o produto")
     if f.bloqueados and (m := f.bloqueados.search(t)):
         return Analise(False, None, f"termo bloqueado: {m.group(0)!r}")
+    exigido = f.exige.search(t) if f.exige else None
+    if f.exige and not exigido:
+        return Analise(False, None, "não cita nenhuma das exigências (ex.: placa de vídeo)")
+    ram = ram_gb(t) if f.ram_minima else None
+    if ram is not None and ram < f.ram_minima:
+        return Analise(False, None, f"{ram}GB de RAM, abaixo de {f.ram_minima}GB")
     # Posts de "resumo" listam vários produtos: vale o par "de R$ X por R$ Y"
     # logo depois do nome; só sem preço depois é que olha o que vem antes.
     validos = [(pos, v) for pos, v in precos_com_posicao(t) if v >= f.preco_minimo]
@@ -184,9 +217,17 @@ def analisar_produto(texto: str, f: FiltroProduto) -> Analise:
     preco = min(candidatos)
     if f.preco_maximo and preco > f.preco_maximo:
         return Analise(False, preco, f"R$ {reais(preco)} passa do seu teto de R$ {reais(f.preco_maximo)}")
-    # Na oferta, o motivo é o termo encontrado (ex.: "novablast 6"): vira o
-    # título do aviso e separa modelos diferentes com o mesmo preço.
-    return Analise(True, preco, re.sub(r"\s+", " ", citacao.group(0)))
+    # Na oferta, o motivo é o termo encontrado (ex.: "novablast 6") e o título
+    # junta o que importa ("Notebook · RTX 4050 · 16GB RAM"); o título também
+    # separa modelos diferentes com o mesmo preço.
+    termo = re.sub(r"\s+", " ", citacao.group(0))
+    partes = [termo.title()]
+    if exigido:  # "rtx3050ti" -> "RTX 3050 TI"
+        placa = re.sub(r"(?<=[a-z])(?=\d)|(?<=\d)(?=[a-z])", " ", exigido.group(0))
+        partes.append(re.sub(r"\s+", " ", placa).upper())
+    if f.ram_minima:
+        partes.append(f"{ram}GB RAM" if ram else "RAM não informada")
+    return Analise(True, preco, termo, " · ".join(partes))
 
 
 def chave_de_repeticao(texto: str, preco: float | None) -> str:

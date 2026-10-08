@@ -51,6 +51,7 @@ class OutroProduto:
     canais: list[str]
     filtro: m.FiltroProduto
     bot_env: str  # variável de ambiente com o token do bot deste produto ("" = bot principal)
+    chave_bot: str  # webhook e lista de inscritos; produtos no mesmo bot dividem a mesma
 
 
 CHAVE_BOT_PRINCIPAL = "ps5"
@@ -62,9 +63,22 @@ def chave_do_bot(nome_produto: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", m.normalizar(nome_produto)).strip("-")
 
 
+def chaves_dos_bots(dados: dict) -> dict[str, str]:
+    """Variável do token -> chave do bot. Vários produtos podem usar o mesmo
+    bot; a chave vem do primeiro produto dele no config.toml, para a lista de
+    inscritos continuar a mesma quando outro produto entra no bot."""
+    chaves: dict[str, str] = {}
+    for bloco in dados.get("outros", []):
+        env = str(bloco.get("bot", "")).strip()
+        if env and env not in chaves:
+            chaves[env] = chave_do_bot(bloco.get("nome", "produto"))
+    return chaves
+
+
 def carregar_outros(dados: dict) -> list[OutroProduto]:
     """Os blocos [[outros]] do config.toml."""
     outros = []
+    chaves = chaves_dos_bots(dados)
     for bloco in dados.get("outros", []):
         termos = m.compilar_termos(bloco.get("termos", []))
         if not termos or not bloco.get("canais"):
@@ -79,8 +93,11 @@ def carregar_outros(dados: dict) -> list[OutroProduto]:
                 bloqueados=m.compilar_termos(bloco.get("termos_bloqueados", [])),
                 preco_minimo=float(bloco.get("preco_minimo", 0)),
                 preco_maximo=float(bloco.get("preco_maximo", 0)),
+                exige=m.compilar_termos(bloco.get("placas", [])),
+                ram_minima=int(bloco.get("ram_minima_gb", 0)),
             ),
             bot_env=str(bloco.get("bot", "")).strip(),
+            chave_bot=chaves.get(str(bloco.get("bot", "")).strip(), CHAVE_BOT_PRINCIPAL),
         ))
     return outros
 
@@ -106,9 +123,9 @@ def ler_posts(pagina: str) -> list[Post]:
     return posts
 
 
-def posts_novos(canal: str, estado: dict) -> tuple[str, list[Post]]:
+def posts_novos(canal: str, estado: dict, baixar=m._baixar) -> tuple[str, list[Post]]:
     """Nome do canal e os posts publicados desde a última rodada."""
-    pagina = m._baixar(f"https://t.me/s/{canal}")
+    pagina = baixar(f"https://t.me/s/{canal}")
     titulo = html.unescape(_TITULO.search(pagina).group(1)) if _TITULO.search(pagina) else f"@{canal}"
     posts = ler_posts(pagina)
     if not posts:
@@ -125,7 +142,7 @@ def posts_novos(canal: str, estado: dict) -> tuple[str, list[Post]]:
     for _ in range(PAGINAS_ANTERIORES):
         if menor <= ultimo + 1:
             break
-        anteriores = ler_posts(m._baixar(f"https://t.me/s/{canal}?before={menor}"))
+        anteriores = ler_posts(baixar(f"https://t.me/s/{canal}?before={menor}"))
         if not anteriores:
             break
         novos.update({p.id: p for p in anteriores if p.id > ultimo})
@@ -155,10 +172,18 @@ async def rodada(simular: bool = False, pelando: bool = True, registrar: bool = 
     estado.setdefault("recentes", {})
     avisos: list[tuple[str, str, str, str]] = []  # (texto do aviso, resumo para o log, token, chave do bot)
 
+    # Um canal lido por mais de um produto é baixado uma vez só por rodada.
+    paginas: dict[str, str] = {}
+
+    def baixar(url: str) -> str:
+        if url not in paginas:
+            paginas[url] = m._baixar(url)
+        return paginas[url]
+
     total_posts = 0
     for canal in canais:
         try:
-            nome, posts = await asyncio.to_thread(posts_novos, canal, estado)
+            nome, posts = await asyncio.to_thread(posts_novos, canal, estado, baixar)
         except Exception as erro:
             m.log(f"Não consegui ler @{canal}: {erro}")
             continue
@@ -174,9 +199,8 @@ async def rodada(simular: bool = False, pelando: bool = True, registrar: bool = 
     # Outros produtos: cada um com seus canais, seu filtro, seu estado (o que
     # já viu, repetições e menor preço) e, se configurado, seu próprio bot.
     for alvo in outros:
-        token_alvo, chave_alvo = token, CHAVE_BOT_PRINCIPAL
+        token_alvo, chave_alvo = token, alvo.chave_bot
         if alvo.bot_env:
-            chave_alvo = chave_do_bot(alvo.nome)
             token_alvo = os.environ.get(alvo.bot_env, "").strip()
             if not token_alvo:  # bot próprio ainda não configurado: não perde o aviso
                 if not simular and alvo.bot_env not in _AVISOU_FALTA_BOT:
@@ -188,7 +212,7 @@ async def rodada(simular: bool = False, pelando: bool = True, registrar: bool = 
         estado_alvo.setdefault("recentes", {})
         for canal in alvo.canais:
             try:
-                nome, posts = await asyncio.to_thread(posts_novos, canal, estado_alvo)
+                nome, posts = await asyncio.to_thread(posts_novos, canal, estado_alvo, baixar)
             except Exception as erro:
                 m.log(f"Não consegui ler @{canal} ({alvo.nome}): {erro}")
                 continue
@@ -197,13 +221,12 @@ async def rodada(simular: bool = False, pelando: bool = True, registrar: bool = 
                 analise = m.analisar_produto(post.texto, alvo.filtro) if post.texto else None
                 if not analise or not analise.oferta:
                     continue
-                modelo = analise.motivo
-                if m.ja_avisada(estado_alvo["recentes"], post.texto, analise.preco, modelo):
+                if m.ja_avisada(estado_alvo["recentes"], post.texto, analise.preco, analise.titulo):
                     continue
                 link = f"https://t.me/{canal}/{post.id}"
                 aviso = m.montar_aviso(analise, post.texto, nome, link, post.links, estado_alvo,
-                                       produto=modelo.title(), emoji=alvo.emoji, chave=f"menor_{modelo}")
-                avisos.append((aviso, f"{modelo.title()} em {nome}: {link}", token_alvo, chave_alvo))
+                                       produto=analise.titulo, emoji=alvo.emoji, chave=f"menor_{analise.motivo}")
+                avisos.append((aviso, f"{analise.titulo} em {nome}: {link}", token_alvo, chave_alvo))
 
     situacao_pelando, pelando_falhou = "desligado", False
     if not cfg.pelando_ativo:
