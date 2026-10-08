@@ -1,0 +1,51 @@
+# Monitor de ofertas PS5 — configuração da versão GitHub Actions
+# Sem senhas aqui: o token do bot e o seu id ficam nos Secrets do repositório.
+# Depois de mudar algo, faça commit; a próxima rodada já usa a versão nova.
+
+[nuvem]
+# Canais públicos do Telegram lidos a cada rodada (o @ do canal, sem o @).
+canais = [
+  "ofertasadrenaline", "descontoemgamespsx", "ofertasplaystationbr",
+  "c_cuponsepromocoesonline", "meups4", "ofertasportateis",
+  "pelandobr", "descontomaior",
+]
+
+[pelando]
+# Também vigia o site pelando.com.br: a busca abaixo (a mesma do seu alerta)
+# e a página de promoções recentes, a cada rodada. false = desliga.
+ativo = true
+busca = "console playstation 5"
+
+[filtro]
+# Só avisa ofertas até este preço, em reais. 0 = avisa qualquer preço.
+preco_maximo = 0
+
+# Abaixo deste valor não é o console (é jogo, controle, assinatura...).
+preco_minimo_console = 1500
+
+# A mensagem precisa citar um destes. Maiúsculas e acentos não importam,
+# e "ps 5" também acha "ps5".
+termos_ps5 = ["ps 5", "playstation 5", "play 5"]
+
+# Sinais de que é o console mesmo. Ganham dos termos de acessório abaixo.
+termos_console = [
+  "console", "slim", "ps5 pro", "playstation 5 pro", "bundle",
+  "edicao digital", "digital edition", "versao digital",
+  "leitor de disco", "com leitor",
+]
+
+# Acessórios que podem custar caro. Se aparecer um destes e nenhum termo de
+# console, a mensagem é ignorada. Jogos e controles comuns já são barrados
+# pelo preco_minimo_console.
+termos_acessorio = [
+  "ssd", "hd externo", "volante", "headset", "fone", "pulse", "monitor",
+  "cadeira", "capa", "skin", "adesivo", "suporte", "cooler", "dock",
+  "base de carregamento", "carregador", "cabo", "dualsense edge",
+  "gift card", "cartao presente", "assinatura", "ps plus", "psn",
+]
+
+# Se aparecer um destes, ignora sempre (mesmo dizendo "console").
+termos_bloqueados = [
+  "para ps5", "pra ps5", "p/ ps5", "para playstation 5", "para console", "pra console",
+  "compativel com", "vr2", "psvr", "playstation vr", "playstation portal", "ps portal",
+]

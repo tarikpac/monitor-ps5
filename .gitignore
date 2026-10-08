@@ -1,0 +1,6 @@
+estado.json
+ofertas.csv
+*.session
+*.session-journal
+.venv/
+__pycache__/
