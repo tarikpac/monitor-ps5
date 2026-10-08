@@ -7,17 +7,18 @@ desliga o serviço depois de 15 minutos sem visitas, então o próprio monitor
 visita o seu endereço a cada 10 minutos.
 
 Os bots recebem mensagens por webhook em /telegram/<bot>: quem aperta
-"Iniciar" (/start) recebe a mensagem de boas-vindas do config.toml.
+"Iniciar" (/start) passa a receber os avisos daquele bot, e /parar tira.
+A lista de inscritos fica no Telegram (assinantes.py).
 
-Variáveis de ambiente: BOT_TOKEN, CHAT_ID (e os bots extras do config.toml);
-o Render fornece PORT e RENDER_EXTERNAL_URL.
+Variáveis de ambiente: BOT_TOKEN, CHAT_ID (o dono), ARMAZEM_CHAT_ID (canal
+dos inscritos) e os bots extras do config.toml; o Render fornece PORT e
+RENDER_EXTERNAL_URL.
 """
 
 import asyncio
 import hashlib
 import json
 import os
-import re
 import threading
 import time
 import tomllib
@@ -27,6 +28,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import monitor as m
 import nuvem
+from assinantes import Assinantes
 
 INTERVALO_CANAIS_S = 60
 INTERVALO_PELANDO_S = 180
@@ -38,14 +40,18 @@ INTERVALO_ACORDAR_S = 600  # bem abaixo dos 15 min que fazem o Render desligar o
 RESUMO_A_CADA_RODADAS = 60  # uma linha de saúde no log por hora
 
 BOAS_VINDAS_PADRAO = "👋 Olá! A partir de agora eu te aviso aqui quando aparecer uma oferta."
-# Para quem não é o dono (CHAT_ID): os avisos só vão para o dono.
-BOAS_VINDAS_OUTROS = "👋 Olá! Este bot é de uso pessoal e só envia avisos para o dono dele."
+COMO_PARAR = "\n\nPara deixar de receber, mande /parar."
+DESPEDIDA = "Pronto, você não vai mais receber avisos deste bot. Para voltar, mande /start."
+COMANDOS = [{"command": "start", "description": "Receber os avisos de ofertas"},
+            {"command": "parar", "description": "Parar de receber os avisos"}]
+PAUSA_ENTRE_ENVIOS_S = 0.05  # o Telegram aceita ~30 mensagens por segundo por bot
 
 status = {"inicio": datetime.now(), "rodadas": 0, "avisos": 0, "ultima": "-", "pelando": "-", "erro": ""}
 # Contadores do resumo de hora em hora; zeram a cada resumo.
 hora = {"posts": 0, "avisos": 0, "erros": 0, "visitas_ok": 0, "visitas_falha": 0}
-# caminho do webhook ("ps5", "novablast"...) -> {"token", "boas_vindas"}
+# caminho do webhook ("ps5", "novablast"...) -> {"token", "boas_vindas", "descricao"}
 bots: dict[str, dict] = {}
+assinantes: Assinantes | None = None
 
 
 def segredo_webhook(token: str) -> str:
@@ -60,13 +66,20 @@ def carregar_bots() -> dict[str, dict]:
     encontrados = {}
     principal = os.environ.get("BOT_TOKEN", "").strip()
     if principal:
-        encontrados["ps5"] = {"token": principal,
-                              "boas_vindas": dados.get("nuvem", {}).get("boas_vindas", BOAS_VINDAS_PADRAO)}
+        nuvem_cfg = dados.get("nuvem", {})
+        encontrados[nuvem.CHAVE_BOT_PRINCIPAL] = {
+            "token": principal,
+            "boas_vindas": nuvem_cfg.get("boas_vindas", BOAS_VINDAS_PADRAO),
+            "descricao": nuvem_cfg.get("descricao", ""),
+        }
     for bloco in dados.get("outros", []):
         token = os.environ.get(str(bloco.get("bot", "")).strip() or "-", "").strip()
         if token:
-            caminho = re.sub(r"[^a-z0-9]+", "-", m.normalizar(bloco.get("nome", "produto"))).strip("-")
-            encontrados[caminho] = {"token": token, "boas_vindas": bloco.get("boas_vindas", BOAS_VINDAS_PADRAO)}
+            encontrados[nuvem.chave_do_bot(bloco.get("nome", "produto"))] = {
+                "token": token,
+                "boas_vindas": bloco.get("boas_vindas", BOAS_VINDAS_PADRAO),
+                "descricao": bloco.get("descricao", ""),
+            }
     return encontrados
 
 
@@ -83,23 +96,52 @@ async def registrar_webhooks() -> None:
         })
         if not resposta.get("ok"):
             m.log(f"Não consegui ligar as mensagens do bot {caminho}: {resposta.get('description')}")
+        # Menu de comandos e o texto que aparece antes de alguém apertar "Iniciar".
+        await m.chamar_bot(bot["token"], "setMyCommands", {"commands": COMANDOS})
+        if bot["descricao"]:
+            await m.chamar_bot(bot["token"], "setMyDescription", {"description": bot["descricao"]})
 
 
-def resposta_ao_bot(bot: dict, atualizacao: dict) -> dict:
+def resposta_ao_bot(caminho: str, bot: dict, atualizacao: dict) -> dict:
     """A resposta vai no próprio retorno do webhook (o Telegram aceita um
     método no corpo), sem precisar de outra chamada à API."""
     mensagem = atualizacao.get("message") or {}
     chat_id = (mensagem.get("chat") or {}).get("id")
-    if not chat_id or not (mensagem.get("text") or "").startswith("/start"):
+    comando = (mensagem.get("text") or "").strip().split("@")[0].split(" ")[0].lower()
+    if not chat_id or (mensagem.get("chat") or {}).get("type") != "private":
         return {}
-    dono = str(chat_id) == os.environ.get("CHAT_ID", "").strip()
-    return {"method": "sendMessage", "chat_id": chat_id,
-            "text": bot["boas_vindas"] if dono else BOAS_VINDAS_OUTROS}
+    if comando == "/start":
+        assinantes.entrar(caminho, chat_id)
+        texto = bot["boas_vindas"] + COMO_PARAR
+    elif comando in ("/parar", "/stop"):
+        assinantes.sair(caminho, chat_id)
+        texto = DESPEDIDA
+    else:
+        return {}
+    return {"method": "sendMessage", "chat_id": chat_id, "text": texto}
+
+
+async def entregar(texto: str, token: str, caminho: str) -> int:
+    """Manda o aviso para todos os inscritos daquele bot. Quem bloqueou o bot
+    sai da lista sozinho."""
+    enviados = 0
+    for chat_id in assinantes.de(caminho):
+        resposta = await m.chamar_bot(token, "sendMessage",
+                                      {"chat_id": chat_id, "text": texto, "parse_mode": "HTML"})
+        if resposta.get("ok"):
+            enviados += 1
+        elif resposta.get("error_code") == 403:  # bloqueou o bot ou apagou a conta
+            await asyncio.to_thread(assinantes.sair, caminho, chat_id)
+        else:
+            m.log(f"Falha ao avisar um inscrito do bot {caminho}: {resposta.get('description')}")
+        await asyncio.sleep(PAUSA_ENTRE_ENVIOS_S)
+    return enviados
 
 
 class Pagina(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
-        bot = bots.get(self.path.rstrip("/").removeprefix("/telegram/")) if self.path.startswith("/telegram/") else None
+        caminho = self.path.rstrip("/").removeprefix("/telegram/") if self.path.startswith("/telegram/") else ""
+        bot = bots.get(caminho)
         if not bot or self.headers.get("X-Telegram-Bot-Api-Secret-Token") != segredo_webhook(bot["token"]):
             self.send_response(403)
             self.end_headers()
@@ -108,7 +150,7 @@ class Pagina(BaseHTTPRequestHandler):
             atualizacao = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
         except ValueError:
             atualizacao = {}
-        corpo = json.dumps(resposta_ao_bot(bot, atualizacao)).encode()
+        corpo = json.dumps(resposta_ao_bot(caminho, bot, atualizacao)).encode()
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(corpo)))
@@ -120,6 +162,7 @@ class Pagina(BaseHTTPRequestHandler):
             f"Monitor de ofertas PS5 no ar desde {status['inicio']:%d/%m %H:%M}",
             f"Rodadas: {status['rodadas']} (última às {status['ultima']}), avisos enviados: {status['avisos']}",
             f"Pelando: {status['pelando']}",
+            "Inscritos: " + (", ".join(f"{b} {len(assinantes.de(b))}" for b in bots) if assinantes else "-"),
         ]
         if status["erro"]:
             linhas.append(f"Último erro: {status['erro']}")
@@ -159,7 +202,11 @@ async def manter_acordado() -> None:
 
 
 async def main() -> None:
+    global assinantes
     bots.update(carregar_bots())
+    assinantes = Assinantes(list(bots), os.environ.get("BOT_TOKEN", "").strip(),
+                            os.environ.get("ARMAZEM_CHAT_ID", "").strip(), os.environ.get("CHAT_ID", "").strip())
+    await asyncio.to_thread(assinantes.carregar)
     servir_pagina()
     asyncio.create_task(manter_acordado())
     await registrar_webhooks()
@@ -170,7 +217,7 @@ async def main() -> None:
         inicio = time.monotonic()
         com_pelando = inicio >= proximo_pelando
         try:
-            resumo = await nuvem.rodada(pelando=com_pelando, registrar=False)
+            resumo = await nuvem.rodada(pelando=com_pelando, registrar=False, entregar=entregar)
             status["erro"] = ""
             status["avisos"] += resumo["avisos"]
             hora["posts"] += resumo["posts"]

@@ -9,7 +9,8 @@ canais = [
   "c_cuponsepromocoesonline", "meups4", "ofertasportateis",
   "pelandobr", "descontomaior",
 ]
-# Resposta do bot do PS5 quando você aperta "Iniciar" (/start).
+# Bot do PS5: o que aparece antes de apertar "Iniciar" e a resposta ao /start.
+descricao = "Avisa na hora quando aparece oferta de console PS5 nos principais canais de promoções do Telegram. Aperte Iniciar para receber."
 boas_vindas = "👋 Olá! A partir de agora eu te aviso aqui sempre que aparecer oferta de console PS5 nos canais de promoções. Deixe as notificações deste chat ligadas para não perder nenhuma."
 
 # Outros produtos, cada um com seus canais e seu filtro, separados do PS5.
@@ -21,7 +22,8 @@ canais = ["teniscertocupons"]
 # Bot próprio deste produto: nome da variável de ambiente com o token dele
 # (no Render, em Environment). Sem ela, usa o bot do PS5.
 bot = "BOT_TOKEN_TENIS"
-# Resposta deste bot quando você aperta "Iniciar" (/start).
+# O que aparece antes de apertar "Iniciar" e a resposta ao /start.
+descricao = "Avisa na hora quando aparece oferta de ASICS Novablast 5 ou 6 (masculino e feminino) no canal Tênis Certo. Aperte Iniciar para receber."
 boas_vindas = "👋 Olá! A partir de agora eu te aviso aqui sempre que aparecer oferta de ASICS Novablast 5 ou 6 (masculino e feminino) no canal Tênis Certo. Deixe as notificações deste chat ligadas para não perder nenhuma."
 # Precisa citar um destes (masculino e feminino entram os dois).
 termos = ["novablast 5", "novablast 6"]

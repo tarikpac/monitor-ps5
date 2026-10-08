@@ -53,6 +53,15 @@ class OutroProduto:
     bot_env: str  # variável de ambiente com o token do bot deste produto ("" = bot principal)
 
 
+CHAVE_BOT_PRINCIPAL = "ps5"
+
+
+def chave_do_bot(nome_produto: str) -> str:
+    """Nome curto do bot de um produto ("Novablast" -> "novablast"): usado no
+    endereço do webhook e na lista de inscritos."""
+    return re.sub(r"[^a-z0-9]+", "-", m.normalizar(nome_produto)).strip("-")
+
+
 def carregar_outros(dados: dict) -> list[OutroProduto]:
     """Os blocos [[outros]] do config.toml."""
     outros = []
@@ -125,9 +134,10 @@ def posts_novos(canal: str, estado: dict) -> tuple[str, list[Post]]:
     return titulo, [novos[i] for i in sorted(novos)]
 
 
-async def rodada(simular: bool = False, pelando: bool = True, registrar: bool = True) -> dict:
+async def rodada(simular: bool = False, pelando: bool = True, registrar: bool = True, entregar=None) -> dict:
     """Uma passada por canais (e Pelando, se `pelando`). Devolve um resumo;
-    com `registrar`, também o escreve no log."""
+    com `registrar`, também o escreve no log. `entregar(texto, token, chave_do_bot)`
+    envia um aviso e devolve para quantas pessoas foi; sem ela, vai só para CHAT_ID."""
     token = os.environ.get("BOT_TOKEN", "").strip()
     chat_id = os.environ.get("CHAT_ID", "").strip()
     if not simular and (not token or not chat_id):
@@ -143,7 +153,7 @@ async def rodada(simular: bool = False, pelando: bool = True, registrar: bool = 
     estado.setdefault("canais", {})
     estado.setdefault("pelando", [])
     estado.setdefault("recentes", {})
-    avisos: list[tuple[str, str, str]] = []  # (texto do aviso, resumo para o log, token do bot)
+    avisos: list[tuple[str, str, str, str]] = []  # (texto do aviso, resumo para o log, token, chave do bot)
 
     total_posts = 0
     for canal in canais:
@@ -158,19 +168,21 @@ async def rodada(simular: bool = False, pelando: bool = True, registrar: bool = 
             if not analise or not analise.oferta or m.ja_avisada(estado["recentes"], post.texto, analise.preco):
                 continue
             link = f"https://t.me/{canal}/{post.id}"
-            avisos.append((m.montar_aviso(analise, post.texto, nome, link, post.links, estado), f"{nome}: {link}", token))
+            avisos.append((m.montar_aviso(analise, post.texto, nome, link, post.links, estado), f"{nome}: {link}",
+                           token, CHAVE_BOT_PRINCIPAL))
 
     # Outros produtos: cada um com seus canais, seu filtro, seu estado (o que
     # já viu, repetições e menor preço) e, se configurado, seu próprio bot.
     for alvo in outros:
-        token_alvo = token
+        token_alvo, chave_alvo = token, CHAVE_BOT_PRINCIPAL
         if alvo.bot_env:
+            chave_alvo = chave_do_bot(alvo.nome)
             token_alvo = os.environ.get(alvo.bot_env, "").strip()
             if not token_alvo:  # bot próprio ainda não configurado: não perde o aviso
                 if not simular and alvo.bot_env not in _AVISOU_FALTA_BOT:
                     _AVISOU_FALTA_BOT.add(alvo.bot_env)
                     m.log(f"Falta {alvo.bot_env} para {alvo.nome}; avisando pelo bot principal.")
-                token_alvo = token
+                token_alvo, chave_alvo = token, CHAVE_BOT_PRINCIPAL
         estado_alvo = estado.setdefault("outros", {}).setdefault(alvo.nome, {})
         estado_alvo.setdefault("canais", {})
         estado_alvo.setdefault("recentes", {})
@@ -191,7 +203,7 @@ async def rodada(simular: bool = False, pelando: bool = True, registrar: bool = 
                 link = f"https://t.me/{canal}/{post.id}"
                 aviso = m.montar_aviso(analise, post.texto, nome, link, post.links, estado_alvo,
                                        produto=modelo.title(), emoji=alvo.emoji, chave=f"menor_{modelo}")
-                avisos.append((aviso, f"{modelo.title()} em {nome}: {link}", token_alvo))
+                avisos.append((aviso, f"{modelo.title()} em {nome}: {link}", token_alvo, chave_alvo))
 
     situacao_pelando, pelando_falhou = "desligado", False
     if not cfg.pelando_ativo:
@@ -217,16 +229,20 @@ async def rodada(simular: bool = False, pelando: bool = True, registrar: bool = 
                 detalhes = " · ".join(x for x in (promo.loja, promo.temperatura and f"{promo.temperatura} no Pelando") if x)
                 aviso = m.montar_aviso(analise, f"{promo.titulo}\n{detalhes}".strip(), "Pelando", promo.link, [],
                                        estado, rotulo_link="Abrir no Pelando")
-                avisos.append((aviso, f"Pelando: {promo.link}", token))
+                avisos.append((aviso, f"Pelando: {promo.link}", token, CHAVE_BOT_PRINCIPAL))
             estado["pelando"] = estado["pelando"][-PELANDO_VISTAS_MAX:]
             estado["pelando_iniciado"] = True
             situacao_pelando = f"{len(promos)} promoções lidas"
         except Exception as erro:
             situacao_pelando, pelando_falhou = f"erro ({erro})", True
 
-    for texto, resumo, token_bot in avisos:
+    for texto, resumo, token_bot, chave_bot in avisos:
         if simular:
             print("-" * 60 + "\n" + texto)
+            continue
+        if entregar:
+            pessoas = await entregar(texto, token_bot, chave_bot)
+            m.log(f"Aviso enviado para {pessoas} pessoa(s) pelo bot {chave_bot} — {resumo}")
             continue
         resposta = await m.chamar_bot(token_bot, "sendMessage", {"chat_id": chat_id, "text": texto, "parse_mode": "HTML"})
         m.log(f"Aviso {'enviado' if resposta.get('ok') else 'FALHOU: ' + str(resposta.get('description'))} — {resumo}")
