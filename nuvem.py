@@ -28,6 +28,7 @@ import monitor as m
 # rodadas; nesse caso busca até estas páginas anteriores para não pular nada.
 PAGINAS_ANTERIORES = 4
 PELANDO_VISTAS_MAX = 1500
+_AVISOU_FALTA_BOT: set[str] = set()  # no servidor, avisa a falta de um bot só uma vez
 
 _POST = re.compile(r'class="tgme_widget_message [^"]*" data-post="([^"/]+)/(\d+)"')
 _TEXTO = re.compile(r'<div class="tgme_widget_message_text[^"]*"[^>]*>(.*?)</div>', re.S)
@@ -49,6 +50,7 @@ class OutroProduto:
     emoji: str
     canais: list[str]
     filtro: m.FiltroProduto
+    bot_env: str  # variável de ambiente com o token do bot deste produto ("" = bot principal)
 
 
 def carregar_outros(dados: dict) -> list[OutroProduto]:
@@ -69,6 +71,7 @@ def carregar_outros(dados: dict) -> list[OutroProduto]:
                 preco_minimo=float(bloco.get("preco_minimo", 0)),
                 preco_maximo=float(bloco.get("preco_maximo", 0)),
             ),
+            bot_env=str(bloco.get("bot", "")).strip(),
         ))
     return outros
 
@@ -140,7 +143,7 @@ async def rodada(simular: bool = False, pelando: bool = True, registrar: bool = 
     estado.setdefault("canais", {})
     estado.setdefault("pelando", [])
     estado.setdefault("recentes", {})
-    avisos: list[tuple[str, str]] = []  # (texto do aviso, resumo para o log)
+    avisos: list[tuple[str, str, str]] = []  # (texto do aviso, resumo para o log, token do bot)
 
     total_posts = 0
     for canal in canais:
@@ -155,11 +158,19 @@ async def rodada(simular: bool = False, pelando: bool = True, registrar: bool = 
             if not analise or not analise.oferta or m.ja_avisada(estado["recentes"], post.texto, analise.preco):
                 continue
             link = f"https://t.me/{canal}/{post.id}"
-            avisos.append((m.montar_aviso(analise, post.texto, nome, link, post.links, estado), f"{nome}: {link}"))
+            avisos.append((m.montar_aviso(analise, post.texto, nome, link, post.links, estado), f"{nome}: {link}", token))
 
-    # Outros produtos: cada um com seus canais, seu filtro e seu estado (o que
-    # já viu, repetições e menor preço), separados do PS5.
+    # Outros produtos: cada um com seus canais, seu filtro, seu estado (o que
+    # já viu, repetições e menor preço) e, se configurado, seu próprio bot.
     for alvo in outros:
+        token_alvo = token
+        if alvo.bot_env:
+            token_alvo = os.environ.get(alvo.bot_env, "").strip()
+            if not token_alvo:  # bot próprio ainda não configurado: não perde o aviso
+                if not simular and alvo.bot_env not in _AVISOU_FALTA_BOT:
+                    _AVISOU_FALTA_BOT.add(alvo.bot_env)
+                    m.log(f"Falta {alvo.bot_env} para {alvo.nome}; avisando pelo bot principal.")
+                token_alvo = token
         estado_alvo = estado.setdefault("outros", {}).setdefault(alvo.nome, {})
         estado_alvo.setdefault("canais", {})
         estado_alvo.setdefault("recentes", {})
@@ -180,7 +191,7 @@ async def rodada(simular: bool = False, pelando: bool = True, registrar: bool = 
                 link = f"https://t.me/{canal}/{post.id}"
                 aviso = m.montar_aviso(analise, post.texto, nome, link, post.links, estado_alvo,
                                        produto=modelo.title(), emoji=alvo.emoji, chave=f"menor_{modelo}")
-                avisos.append((aviso, f"{modelo.title()} em {nome}: {link}"))
+                avisos.append((aviso, f"{modelo.title()} em {nome}: {link}", token_alvo))
 
     situacao_pelando, pelando_falhou = "desligado", False
     if not cfg.pelando_ativo:
@@ -206,18 +217,18 @@ async def rodada(simular: bool = False, pelando: bool = True, registrar: bool = 
                 detalhes = " · ".join(x for x in (promo.loja, promo.temperatura and f"{promo.temperatura} no Pelando") if x)
                 aviso = m.montar_aviso(analise, f"{promo.titulo}\n{detalhes}".strip(), "Pelando", promo.link, [],
                                        estado, rotulo_link="Abrir no Pelando")
-                avisos.append((aviso, f"Pelando: {promo.link}"))
+                avisos.append((aviso, f"Pelando: {promo.link}", token))
             estado["pelando"] = estado["pelando"][-PELANDO_VISTAS_MAX:]
             estado["pelando_iniciado"] = True
             situacao_pelando = f"{len(promos)} promoções lidas"
         except Exception as erro:
             situacao_pelando, pelando_falhou = f"erro ({erro})", True
 
-    for texto, resumo in avisos:
+    for texto, resumo, token_bot in avisos:
         if simular:
             print("-" * 60 + "\n" + texto)
             continue
-        resposta = await m.chamar_bot(token, "sendMessage", {"chat_id": chat_id, "text": texto, "parse_mode": "HTML"})
+        resposta = await m.chamar_bot(token_bot, "sendMessage", {"chat_id": chat_id, "text": texto, "parse_mode": "HTML"})
         m.log(f"Aviso {'enviado' if resposta.get('ok') else 'FALHOU: ' + str(resposta.get('description'))} — {resumo}")
 
     m.salvar_estado(estado)
