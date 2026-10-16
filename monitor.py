@@ -137,7 +137,8 @@ def analisar(texto: str, f: Filtro) -> Analise:
     5. sem preço nenhum, só passa se disser "console" (ou outro termo de console);
     6. por fim, o seu teto de preço."""
     t = normalizar(texto)
-    if not f.ps5.search(t):
+    citacao = f.ps5.search(t)
+    if not citacao:
         return Analise(False, None, "não cita PS5")
     if f.bloqueados and (m := f.bloqueados.search(t)):
         return Analise(False, None, f"termo bloqueado: {m.group(0)!r}")
@@ -145,13 +146,17 @@ def analisar(texto: str, f: Filtro) -> Analise:
     acessorio = f.acessorio.search(t) if f.acessorio else None
     if acessorio and not console:
         return Analise(False, None, f"parece acessório: {acessorio.group(0)!r}")
-    precos = extrair_precos(t)
+    com_posicao = precos_com_posicao(t)
+    precos = [v for _, v in com_posicao]
     precos_console = [p for p in precos if p >= f.preco_minimo_console]
     if precos and not precos_console:
         return Analise(False, min(precos), f"R$ {reais(min(precos))} é barato demais para ser o console")
     if not precos_console and not console:
         return Analise(False, None, "sem preço e sem dizer que é o console")
-    preco = min(precos_console) if precos_console else None
+    # Posts com vários produtos (console, volante, Switch...): vale o par
+    # "de R$ X por R$ Y" logo depois do PS5, não o menor preço do post.
+    depois = [v for pos, v in com_posicao if pos > citacao.start() and v >= f.preco_minimo_console][:2]
+    preco = min(depois or precos_console) if precos_console else None
     if f.preco_maximo and preco and preco > f.preco_maximo:
         return Analise(False, preco, f"R$ {reais(preco)} passa do seu teto de R$ {reais(f.preco_maximo)}")
     return Analise(True, preco, "oferta de console PS5")
